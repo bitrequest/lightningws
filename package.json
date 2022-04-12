@@ -1,0 +1,12 @@
+{
+    "name": "bitrequest-lightning-wsclient",
+    "version": "1.0.0",
+    "description": "Websocket for lightning app bitrequest",
+    "main": "lightningws.js",
+    "author": "Bitrequest",
+    "license": "MIT",
+    "dependencies": {
+        "express": "^4.17.3",
+        "ws": "^8.5.0"
+    }
+}
