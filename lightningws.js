@@ -3,13 +3,11 @@ const WebSocket = require("ws").Server,
 	app = express(),
 	server = new WebSocket({
 		"server": app.listen(8040)
-	});
-
-const clients = new Map();
+	}),
+	clients = new Map();
 
 server.on("connection", socket => {
 	let socket_id = null;
-
 	socket.on("message", message => {
 		const object = JSON.parse(message);
 		socket_id = object.id;
@@ -19,7 +17,6 @@ server.on("connection", socket => {
 			"status": "opened"
 		}));
 	});
-
 	socket.onclose = function() {
 		if (socket_id) {
 			clients.delete(socket_id);
@@ -32,11 +29,9 @@ app.post("/", function(req, res) {
 		post_object = JSON.parse(post_string),
 		inv_id = post_object.pid,
 		client = clients.get(inv_id);
-
 	if (client && client.readyState === 1) {
 		client.send(post_string);
 	}
-
 	res.sendStatus(200);
 });
 
