@@ -39,3 +39,8 @@ app.post("/", function(req, res) {
 
 	res.sendStatus(200);
 });
+
+// ─── NWC / SPARK cryptography ───────────────────────────────────────────────────────────────────
+const nwc = require("./nwc");
+nwc.register(app);
+nwc.registerSpark(app);
