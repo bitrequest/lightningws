@@ -23,6 +23,9 @@ function nip04SharedSecret(privkeyHex, pubkeyHex) {
     return Buffer.from(shared.slice(1, 33));
 }
 
+// NIP-04 (unauthenticated AES-CBC) is deprecated but spec-valid here: the event
+// signature covers content, so integrity doesn't rely on the cipher. NIP-44
+// migration needs info-event negotiation — not yet implemented.
 function nip04Encrypt(plaintext, privkeyHex, pubkeyHex) {
     const secret = nip04SharedSecret(privkeyHex, pubkeyHex),
         iv = randomBytes(16),
