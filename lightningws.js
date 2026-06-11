@@ -17,17 +17,25 @@ server.on("connection", socket => {
 			"status": "opened"
 		}));
 	});
-	socket.onclose = function() {
+	socket.on("close", () => {
 		if (socket_id) {
 			clients.delete(socket_id);
 		}
-	};
+	});
 });
 
 app.post("/", function(req, res) {
-	const post_string = req.headers.post,
-		post_object = JSON.parse(post_string),
-		inv_id = post_object.pid,
+	const post_string = req.headers.post;
+	if (!post_string) {
+		return res.sendStatus(400);
+	}
+	let post_object;
+	try {
+		post_object = JSON.parse(post_string);
+	} catch {
+		return res.sendStatus(400);
+	}
+	const inv_id = post_object.pid,
 		client = clients.get(inv_id);
 	if (client && client.readyState === 1) {
 		client.send(post_string);
