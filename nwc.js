@@ -4,6 +4,10 @@
  * Supported methods:
  *   make_invoice   — params: { amount (msats), description }
  *   lookup_invoice — params: { payment_hash }
+ *
+ * Encryption: NIP-44 v2 by default (NIP-04 is deprecated in NIP-47). Responses
+ * are decrypted by detecting the scheme, so a wallet replying in either works.
+ * POST body may set "encryption":"nip04" to force the legacy scheme.
  */
 
 "use strict";
@@ -11,7 +15,8 @@
 const WebSocket = require("ws"),
     {secp256k1, schnorr } = require("@noble/curves/secp256k1.js"),
     {randomBytes, createCipheriv, createDecipheriv } = require("crypto"),
-    {sha256} = require("@noble/hashes/sha2.js");
+    {sha256} = require("@noble/hashes/sha2.js"),
+    nip44 = require("./nip44.js");
 
 // ─── NIP-04 ───────────────────────────────────────────────────────────────────
 
@@ -23,9 +28,10 @@ function nip04SharedSecret(privkeyHex, pubkeyHex) {
     return Buffer.from(shared.slice(1, 33));
 }
 
-// NIP-04 (unauthenticated AES-CBC) is deprecated but spec-valid here: the event
-// signature covers content, so integrity doesn't rely on the cipher. NIP-44
-// migration needs info-event negotiation — not yet implemented.
+// NIP-04 (unauthenticated AES-CBC) is deprecated in NIP-47. We now default to
+// NIP-44 (see buildEvent) and keep NIP-04 only to (a) read responses from wallets
+// that still reply in it and (b) allow an explicit nip04 override for a legacy
+// wallet that can't do NIP-44.
 function nip04Encrypt(plaintext, privkeyHex, pubkeyHex) {
     const secret = nip04SharedSecret(privkeyHex, pubkeyHex),
         iv = randomBytes(16),
@@ -44,15 +50,30 @@ function nip04Decrypt(ciphertext, privkeyHex, pubkeyHex) {
     ]).toString("utf8");
 }
 
+// Decrypt a response by sniffing the scheme: NIP-04 payloads carry a "?iv="
+// separator, NIP-44 payloads don't. Lets us read whatever the wallet replied with,
+// regardless of which scheme we requested.
+function decryptContent(content, privkeyHex, walletPubkey) {
+    return content.includes("?iv=")
+        ? nip04Decrypt(content, privkeyHex, walletPubkey)
+        : nip44.decrypt(content, privkeyHex, walletPubkey);
+}
+
 // ─── Nostr event ──────────────────────────────────────────────────────────────
 
-function buildEvent(method, params, privkeyHex, walletPubkey) {
+// encryption: "nip44" (default) | "nip04". NIP-44 adds the negotiated encryption
+// tag per NIP-47; NIP-04 is the deprecated legacy path.
+function buildEvent(method, params, privkeyHex, walletPubkey, encryption) {
     const privBytes = Buffer.from(privkeyHex, "hex"),
         pubkey = Buffer.from(schnorr.getPublicKey(privBytes)).toString("hex"),
-        content = nip04Encrypt(JSON.stringify({ method, params }), privkeyHex, walletPubkey),
+        useNip44 = encryption !== "nip04",
+        plaintext = JSON.stringify({ method, params }),
+        content = useNip44
+            ? nip44.encrypt(plaintext, privkeyHex, walletPubkey)
+            : nip04Encrypt(plaintext, privkeyHex, walletPubkey),
         created_at = Math.floor(Date.now() / 1000),
         kind = 23194,
-        tags = [["p", walletPubkey]],
+        tags = useNip44 ? [["p", walletPubkey], ["encryption", "nip44_v2"]] : [["p", walletPubkey]],
         serialized = JSON.stringify([0, pubkey, created_at, kind, tags, content]),
         id = Buffer.from(sha256(Buffer.from(serialized))).toString("hex"),
         sig = Buffer.from(schnorr.sign(Buffer.from(id, "hex"), privBytes)).toString("hex");
@@ -61,7 +82,7 @@ function buildEvent(method, params, privkeyHex, walletPubkey) {
 
 // ─── NWC relay request ────────────────────────────────────────────────────────
 
-function nwcRequest(uri, method, params) {
+function nwcRequest(uri, method, params, encryption) {
     return new Promise((resolve, reject) => {
         // Parse URI
         const match = uri.match(/^nostr\+walletconnect:\/\/([^?]+)\?(.+)$/);
@@ -71,7 +92,7 @@ function nwcRequest(uri, method, params) {
             relay = qs.get("relay"),
             secret = qs.get("secret");
         if (!relay || !secret) return reject(new Error("Missing relay or secret in NWC URI"));
-        const event = buildEvent(method, params, secret, walletPubkey),
+        const event = buildEvent(method, params, secret, walletPubkey, encryption),
             subId = randomBytes(8).toString("hex"),
             myPub = event.pubkey,
             ws = new WebSocket(relay);
@@ -107,7 +128,7 @@ function nwcRequest(uri, method, params) {
             }
             if (msg[0] === "EVENT" && msg[2]?.kind === 23195) {
                 try {
-                    const decrypted = nip04Decrypt(msg[2].content, secret, walletPubkey),
+                    const decrypted = decryptContent(msg[2].content, secret, walletPubkey),
                         result = JSON.parse(decrypted);
                     if (!settled) {
                         settled = true;
@@ -146,12 +167,12 @@ function register(app) {
     const express = require("express");
     app.use("/nwc", express.json());
     app.post("/nwc", async (req, res) => {
-        const {uri, method, params} = req.body ?? {};
+        const {uri, method, params, encryption} = req.body ?? {};
         if (!uri || !method) {
             return res.status(400).json({"ok": false, "error": "Missing uri or method"});
         }
         try {
-            const result = await nwcRequest(uri, method, params ?? {});
+            const result = await nwcRequest(uri, method, params ?? {}, encryption);
             res.json({ok: true, result});
         } catch (e) {
             res.status(500).json({"ok": false, "error": e.message});
