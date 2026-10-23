@@ -9,7 +9,9 @@ const WebSocket = require("ws").Server,
 server.on("connection", socket => {
 	let socket_id = null;
 	socket.on("message", message => {
-		const object = JSON.parse(message);
+		let object;
+		try { object = JSON.parse(message);} catch {return;}
+		if (!object || typeof object.id !== "string") return;
 		socket_id = object.id;
 		clients.set(socket_id, socket);
 		socket.send(JSON.stringify({
