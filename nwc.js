@@ -16,7 +16,35 @@ const WebSocket = require("ws"),
     {secp256k1, schnorr } = require("@noble/curves/secp256k1.js"),
     {randomBytes, createCipheriv, createDecipheriv } = require("crypto"),
     {sha256} = require("@noble/hashes/sha2.js"),
-    nip44 = require("./nip44.js");
+    nip44 = require("./nip44.js"),
+    dns = require("dns"),
+    net = require("net");
+
+const blocked = new net.BlockList();
+[["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.168.0.0", 16], ["198.18.0.0", 15], ["224.0.0.0", 4], ["240.0.0.0", 4]].forEach(([a, p]) => blocked.addSubnet(a, p, "ipv4"));
+[["::", 128], ["::1", 128], ["fc00::", 7], ["fe80::", 10], ["ff00::", 8]].forEach(([a, p]) => blocked.addSubnet(a, p, "ipv6"));
+
+function isPublicIp(ip) {
+    return !blocked.check(ip, net.isIPv6(ip) ? "ipv6" : "ipv4");
+}
+
+function safeLookup(hostname, options, cb) {
+    dns.lookup(hostname, {...options, "all": true}, (err, addrs) => {
+        if (err) return cb(err);
+        if (!addrs.length || addrs.some(a => !isPublicIp(a.address))) return cb(new Error("Relay host not allowed"));
+        if (options.all) return cb(null, addrs);
+        cb(null, addrs[0].address, addrs[0].family);
+    });
+}
+
+function checkRelay(relay) {
+    let u;
+    try { u = new URL(relay);} catch { throw new Error("Invalid relay URL");}
+    if (u.protocol !== "wss:" || u.username || u.password) throw new Error("Relay must be a plain wss:// URL");
+    const host = u.hostname.replace(/^\[|\]$/g, "");
+    if (net.isIP(host) && !isPublicIp(host)) throw new Error("Relay host not allowed");
+    return u.href;
+}
 
 // ─── NIP-04 ───────────────────────────────────────────────────────────────────
 
@@ -92,10 +120,13 @@ function nwcRequest(uri, method, params, encryption) {
             relay = qs.get("relay"),
             secret = qs.get("secret");
         if (!relay || !secret) return reject(new Error("Missing relay or secret in NWC URI"));
+        if (!/^[0-9a-f]{64}$/i.test(walletPubkey) || !/^[0-9a-f]{64}$/i.test(secret)) return reject(new Error("Invalid pubkey or secret in NWC URI"));
+        let relayUrl;
+        try { relayUrl = checkRelay(relay);} catch (e) { return reject(e);}
         const event = buildEvent(method, params, secret, walletPubkey, encryption),
             subId = randomBytes(8).toString("hex"),
             myPub = event.pubkey,
-            ws = new WebSocket(relay);
+            ws = new WebSocket(relayUrl, {"lookup": safeLookup, "handshakeTimeout": 10000, "maxPayload": 1048576});
         let settled = false;
         const timeout = setTimeout(() => {
             if (!settled) {
@@ -168,7 +199,7 @@ function register(app) {
     app.use("/nwc", express.json());
     app.post("/nwc", async (req, res) => {
         const {uri, method, params, encryption} = req.body ?? {};
-        if (!uri || !method) {
+        if (typeof uri !== "string" || !["make_invoice", "lookup_invoice", "get_info", "list_transactions"].includes(method)) {
             return res.status(400).json({"ok": false, "error": "Missing uri or method"});
         }
         try {
