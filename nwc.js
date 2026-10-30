@@ -110,6 +110,13 @@ function buildEvent(method, params, privkeyHex, walletPubkey, encryption) {
 
 // ─── NWC relay request ────────────────────────────────────────────────────────
 
+// A response counts only when it comes from the wallet and, if it has e tags, answers this request
+function isReply(ev, walletPubkey, requestId) {
+    if (String(ev.pubkey ?? "").toLowerCase() !== walletPubkey.toLowerCase()) return false;
+    const eTags = (Array.isArray(ev.tags) ? ev.tags : []).filter(t => Array.isArray(t) && t[0] === "e").map(t => t[1]);
+    return !eTags.length || eTags.includes(requestId);
+}
+
 function nwcRequest(uri, method, params, encryption) {
     return new Promise((resolve, reject) => {
         // Parse URI
@@ -157,10 +164,15 @@ function nwcRequest(uri, method, params, encryption) {
                 }
                 return;
             }
-            if (msg[0] === "EVENT" && msg[2]?.kind === 23195) {
+            if (msg[0] === "EVENT" && msg[2]?.kind === 23195 && isReply(msg[2], walletPubkey, event.id)) {
+                let decrypted;
                 try {
-                    const decrypted = decryptContent(msg[2].content, secret, walletPubkey),
-                        result = JSON.parse(decrypted);
+                    decrypted = decryptContent(msg[2].content, secret, walletPubkey);
+                } catch {
+                    return; // someone else's event
+                }
+                try {
+                    const result = JSON.parse(decrypted);
                     if (!settled) {
                         settled = true;
                         clearTimeout(timeout);
@@ -176,7 +188,7 @@ function nwcRequest(uri, method, params, encryption) {
                         settled = true;
                         clearTimeout(timeout);
                         ws.close();
-                        reject(new Error("Decrypt failed: " + e.message));
+                        reject(new Error("NWC: invalid response JSON"));
                     }
                 }
             }
