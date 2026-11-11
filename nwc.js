@@ -230,21 +230,8 @@ function sparkEciesEncrypt(plaintextHex, recipientPubkeyHex) {
     const plaintext = Buffer.from(plaintextHex, "hex"),
         ephPriv = randomBytes(32),
         ephPubHex = Buffer.from(secp256k1.getPublicKey(ephPriv, false)).toString("hex"); // uncompressed
-    // ECDH: shared secret x coordinate
-    const sharedCompressed = secp256k1.getSharedSecret(ephPriv, Buffer.from(recipientPubkeyHex, "hex")),
-        sharedX = Buffer.from(sharedCompressed.slice(1, 33));
-    // Reconstruct uncompressed shared point for HKDF (matches spark_preimage.php)
-    // We need full uncompressed point — derive y from x
-    const sharedPoint = secp256k1.ProjectivePoint
-        ? secp256k1.ProjectivePoint.fromHex(Buffer.from(sharedCompressed).toString("hex")) : null;
-    let sharedUncompressed;
-    if (sharedPoint) {
-        sharedUncompressed = Buffer.from(sharedPoint.toRawBytes(false));
-    } else {
-        // Fallback: use only x (some versions don't expose ProjectivePoint)
-        const sharedFull = secp256k1.getSharedSecret(ephPriv, Buffer.from(recipientPubkeyHex, "hex"), false);
-        sharedUncompressed = Buffer.from(sharedFull);
-    }
+    // ECDH: full uncompressed shared point for HKDF (matches spark_preimage.php)
+    const sharedUncompressed = Buffer.from(secp256k1.getSharedSecret(ephPriv, Buffer.from(recipientPubkeyHex, "hex"), false));
     // HKDF key derivation (matches spark_preimage.php)
     const {hkdf} = require("@noble/hashes/hkdf.js"),
         {sha256} = require("@noble/hashes/sha2.js"),
