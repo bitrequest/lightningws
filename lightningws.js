@@ -2,7 +2,8 @@ const WebSocket = require("ws").Server,
 	express = require("express"),
 	app = express(),
 	server = new WebSocket({
-		"server": app.listen(8040)
+		"server": app.listen(8040),
+		"maxPayload": 1024
 	}),
 	clients = new Map();
 
@@ -12,6 +13,9 @@ server.on("connection", socket => {
 		let object;
 		try { object = JSON.parse(message);} catch {return;}
 		if (!object || typeof object.id !== "string") return;
+		if (socket_id && socket_id !== object.id && clients.get(socket_id) === socket) {
+			clients.delete(socket_id);
+		}
 		socket_id = object.id;
 		clients.set(socket_id, socket);
 		socket.send(JSON.stringify({
@@ -19,8 +23,9 @@ server.on("connection", socket => {
 			"status": "opened"
 		}));
 	});
+	socket.on("error", () => {}); // a bad frame closes that socket, without a listener it stops the whole server
 	socket.on("close", () => {
-		if (socket_id) {
+		if (socket_id && clients.get(socket_id) === socket) {
 			clients.delete(socket_id);
 		}
 	});
